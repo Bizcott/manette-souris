@@ -14,6 +14,10 @@ Mapping général :
   LB (maintenu)  : souris rapide
   START + BACK   : quitter le programme
 
+Icône dans la zone de notification (tray) :
+  Clic gauche    : ouvrir/fermer le clavier virtuel
+  Clic droit     : menu (clavier / quitter)
+
 Quand le clavier est ouvert :
   Croix (flèches): sélectionner une touche (cadre bleu)
   A              : appuyer sur la touche sélectionnée
@@ -395,6 +399,111 @@ class VirtualKeyboard:
         self._render()
 
 
+# -------------------------------------------------------------- Icône tray ---
+
+_shell32 = ctypes.windll.shell32
+_user32.DefWindowProcW.restype = ctypes.c_ssize_t
+_user32.DefWindowProcW.argtypes = (wt.HWND, ctypes.c_uint, wt.WPARAM, wt.LPARAM)
+_user32.TrackPopupMenu.restype = ctypes.c_ssize_t
+
+
+class NOTIFYICONDATA(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wt.DWORD), ("hWnd", wt.HWND), ("uID", ctypes.c_uint),
+        ("uFlags", ctypes.c_uint), ("uCallbackMessage", ctypes.c_uint),
+        ("hIcon", ctypes.c_void_p), ("szTip", ctypes.c_wchar * 128),
+        ("dwState", wt.DWORD), ("dwStateMask", wt.DWORD),
+        ("szInfo", ctypes.c_wchar * 256), ("uVersion", ctypes.c_uint),
+        ("szInfoTitle", ctypes.c_wchar * 64), ("dwInfoFlags", wt.DWORD),
+        ("guidItem", ctypes.c_byte * 16), ("hBalloonIcon", ctypes.c_void_p),
+    ]
+
+
+class WNDCLASS(ctypes.Structure):
+    _fields_ = [
+        ("style", ctypes.c_uint), ("lpfnWndProc", ctypes.c_void_p),
+        ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+        ("hInstance", wt.HINSTANCE), ("hIcon", ctypes.c_void_p),
+        ("hCursor", ctypes.c_void_p), ("hbrBackground", ctypes.c_void_p),
+        ("lpszMenuName", wt.LPCWSTR), ("lpszClassName", wt.LPCWSTR),
+    ]
+
+
+class TrayIcon:
+    """Icône de zone de notification : clic gauche = clavier, clic droit = menu."""
+
+    WM_TRAYICON = 0x8001  # WM_APP + 1
+
+    def __init__(self, on_toggle, on_quit):
+        self.on_toggle = on_toggle
+        self.on_quit = on_quit
+        self.hwnd = None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def close(self):
+        if self.hwnd:
+            _user32.PostMessageW(self.hwnd, 0x0010, 0, 0)  # WM_CLOSE
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == self.WM_TRAYICON:
+            event = lparam & 0xFFFF
+            if event == 0x0202:  # WM_LBUTTONUP
+                self.on_toggle()
+            elif event == 0x0205:  # WM_RBUTTONUP
+                menu = _user32.CreatePopupMenu()
+                _user32.AppendMenuW(menu, 0, 1, "Ouvrir/fermer le clavier\tY")
+                _user32.AppendMenuW(menu, 0x0800, 0, None)  # séparateur
+                _user32.AppendMenuW(menu, 0, 2, "Quitter\tSTART+BACK")
+                pt = wt.POINT()
+                _user32.GetCursorPos(ctypes.byref(pt))
+                _user32.SetForegroundWindow(hwnd)
+                # TPM_RETURNCMD | TPM_RIGHTBUTTON
+                cmd = _user32.TrackPopupMenu(menu, 0x0102, pt.x, pt.y, 0, hwnd, None)
+                _user32.DestroyMenu(menu)
+                if cmd == 1:
+                    self.on_toggle()
+                elif cmd == 2:
+                    self.on_quit()
+            return 0
+        if msg == 0x0010:  # WM_CLOSE
+            _shell32.Shell_NotifyIconW(2, ctypes.byref(self.nid))  # NIM_DELETE
+            _user32.DestroyWindow(hwnd)
+            return 0
+        if msg == 0x0002:  # WM_DESTROY
+            _user32.PostQuitMessage(0)
+            return 0
+        return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _run(self):
+        WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, ctypes.c_uint,
+                                     wt.WPARAM, wt.LPARAM)
+        self._proc = WNDPROC(self._wndproc)  # référence gardée (GC)
+        hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
+        wc = WNDCLASS(lpfnWndProc=ctypes.cast(self._proc, ctypes.c_void_p),
+                      hInstance=hinst, lpszClassName="ManetteSourisTray")
+        _user32.RegisterClassW(ctypes.byref(wc))
+        self.hwnd = _user32.CreateWindowExW(0, "ManetteSourisTray", None, 0,
+                                            0, 0, 0, 0, None, None, hinst, None)
+
+        # Icône clavier de Windows (osk.exe), sinon icône générique
+        _shell32.ExtractIconW.restype = ctypes.c_void_p
+        hicon = _shell32.ExtractIconW(hinst, r"C:\Windows\System32\osk.exe", 0)
+        if not hicon or hicon == 1:
+            hicon = _user32.LoadIconW(None, 32512)  # IDI_APPLICATION
+
+        self.nid = NOTIFYICONDATA(
+            cbSize=ctypes.sizeof(NOTIFYICONDATA), hWnd=self.hwnd, uID=1,
+            uFlags=0x7,  # NIF_MESSAGE | NIF_ICON | NIF_TIP
+            uCallbackMessage=self.WM_TRAYICON, hIcon=hicon,
+            szTip="Manette Souris — clic : clavier virtuel")
+        _shell32.Shell_NotifyIconW(0, ctypes.byref(self.nid))  # NIM_ADD
+
+        msg = wt.MSG()
+        while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            _user32.TranslateMessage(ctypes.byref(msg))
+            _user32.DispatchMessageW(ctypes.byref(msg))
+
+
 # ------------------------------------------------------------------ Boucle ---
 
 POLL_HZ = 1000       # fréquence de lecture de la manette (thread dédié)
@@ -434,6 +543,17 @@ class App:
         self.ui_queue = queue.Queue()
         self.win_move = [0.0, 0.0]  # déplacement du clavier accumulé (START+stick)
         self.win_resize = 0.0       # redimensionnement accumulé (BACK+stick droit)
+        self.tray = TrayIcon(self.toggle_keyboard, self.quit)
+
+    def toggle_keyboard(self):
+        """Appelable depuis n'importe quel thread (bouton Y ou clic tray)."""
+        self.kb_shown = not self.kb_shown
+        self.ui_queue.put(("toggle",))
+
+    def quit(self):
+        print("Arrêt demandé.")
+        self.running = False
+        self.ui_queue.put(("quit",))
 
     def run(self):
         print(__doc__)
@@ -497,6 +617,7 @@ class App:
                 elif action == "press":
                     self.kb.press_selected()
                 elif action == "quit":
+                    self.tray.close()
                     self.root.destroy()
                     return
         except queue.Empty:
@@ -544,9 +665,7 @@ class App:
         released = ~btn & self.prev_buttons
 
         if btn & BTN_START and btn & BTN_BACK:
-            print("Arrêt demandé (START+BACK).")
-            self.running = False
-            self.ui_queue.put(("quit",))
+            self.quit()
             return
 
         # ---- souris (toujours active), vitesses en unités/seconde ----
@@ -587,8 +706,7 @@ class App:
 
         # ---- clavier virtuel (rendu délégué au thread tkinter via la file) ----
         if pressed & BTN_Y:
-            self.kb_shown = not self.kb_shown
-            self.ui_queue.put(("toggle",))
+            self.toggle_keyboard()
 
         if self.kb_shown:
             for bit, (dr, dc) in ((BTN_DPAD_UP, (-1, 0)), (BTN_DPAD_DOWN, (1, 0)),
