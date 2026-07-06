@@ -406,6 +406,10 @@ _user32.DefWindowProcW.restype = ctypes.c_ssize_t
 _user32.DefWindowProcW.argtypes = (wt.HWND, ctypes.c_uint, wt.WPARAM, wt.LPARAM)
 _user32.TrackPopupMenu.restype = ctypes.c_ssize_t
 
+# Message inter-instances : relancer le programme quand il tourne déjà
+# demande à l'instance existante d'ouvrir/fermer le clavier.
+TOGGLE_MSG = _user32.RegisterWindowMessageW("ManetteSourisToggle")
+
 
 class NOTIFYICONDATA(ctypes.Structure):
     _fields_ = [
@@ -445,6 +449,9 @@ class TrayIcon:
             _user32.PostMessageW(self.hwnd, 0x0010, 0, 0)  # WM_CLOSE
 
     def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == TOGGLE_MSG:  # envoyé par un second lancement du programme
+            self.on_toggle()
+            return 0
         if msg == self.WM_TRAYICON:
             event = lparam & 0xFFFF
             if event == 0x0202:  # WM_LBUTTONUP
@@ -753,6 +760,15 @@ class App:
 
 if __name__ == "__main__":
     import sys
+
+    # Instance unique : si le programme tourne déjà, on lui demande juste
+    # d'ouvrir/fermer le clavier (le raccourci se comporte alors comme le
+    # bouton du clavier tactile de Windows), puis on quitte.
+    _k32 = ctypes.windll.kernel32
+    _k32.CreateMutexW(None, False, "ManetteSourisMutex")
+    if _k32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        _user32.PostMessageW(0xFFFF, TOGGLE_MSG, 0, 0)  # HWND_BROADCAST
+        raise SystemExit
 
     layout = None
     if len(sys.argv) > 1:
