@@ -8,6 +8,10 @@ Un seul fichier Python, **zéro dépendance** — uniquement la bibliothèque st
 ![Python](https://img.shields.io/badge/Python-3.8%2B-3776ab)
 ![Dépendances](https://img.shields.io/badge/d%C3%A9pendances-aucune-success)
 
+![Clavier virtuel](screenshot.png)
+
+> ⚠️ **Projet fait à l'arrache en ~10 minutes.** À la base c'était juste pour bricoler une mini télécommande simple pour le PC. Il reste des incohérences et des fonctionnalités manquantes (pas de sauvegarde de la position/taille du clavier, pas de maintien de touche pour les accents, pas d'autostart, etc.). À prendre comme un petit outil pratique, pas comme un projet fini.
+
 ## ✨ Fonctionnalités
 
 - **Souris fluide** : polling à 1000 Hz via un timer haute résolution Windows, vitesse en pixels/seconde indépendante de la cadence, courbe de précision (lent au centre du stick, rapide au bord)
